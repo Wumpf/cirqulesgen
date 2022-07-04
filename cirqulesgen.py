@@ -2,7 +2,9 @@ from time import perf_counter
 from PIL import Image
 import numpy as np
 from numpy.random import default_rng
+import time
 
+t0= time.time()
 # new white image
 w, h = 1024, 768
 # data = np.zeros((h, w, 3), dtype=np.uint8)
@@ -35,6 +37,9 @@ area_colors[np.searchsorted(unique_area_indices, 0)] = [255, 255, 255] # we get 
 # assign every pixel an index into the color array
 perpix_color_index = np.nonzero(perpix_area_index[:, None] == unique_area_indices)[1]
 data = np.reshape(area_colors[perpix_color_index], (h, w, 3))
+
+t1 = time.time() - t0
+print("Time elapsed: ", t1) # CPU seconds elapsed (floating point)
 
 img = Image.fromarray(data, 'RGB')
 img.show()
