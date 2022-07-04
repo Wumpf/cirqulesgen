@@ -25,9 +25,12 @@ dist_circles_sq = np.sum((np.broadcast_to(pixel_coordinates[None, :, :], (circle
 circle_pix = dist_circles_sq < circles_radius_sq[:, None]
 
 # determine area index for each pixel. no time for proper hashing!
-perpix_area_index = np.packbits(circle_pix, axis=0)
+perpix_area_index_bytes = np.packbits(circle_pix, axis=0)
+perpix_area_index = np.zeros(perpix_area_index_bytes.shape[1])
 byte_factors = 256 ** np.arange(8, dtype=np.int64)
-perpix_area_index = (perpix_area_index * byte_factors[:perpix_area_index.shape[0], None]).sum(axis=0)
+for chunk_start in range(0, perpix_area_index_bytes.shape[0], 8):
+    chunk_end = min(chunk_start + 8, perpix_area_index_bytes.shape[0])
+    perpix_area_index += (perpix_area_index_bytes[chunk_start:chunk_end] * byte_factors[:(chunk_end - chunk_start), None]).sum(axis=0)
 
 # determine the color for each area
 unique_area_indices = np.unique(perpix_area_index)
