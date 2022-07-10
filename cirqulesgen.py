@@ -1,45 +1,32 @@
+from dataclasses import replace
 import sys
 from typing import Generator
 from PIL import Image
 import numpy as np
+import cv2
 from numpy.random import default_rng
 
-image_path = 'tiger-small.png'
+image_path = 'couple.png'
 circle_count = 200
 radius_range = (5, 50)
 reduce_variance_cutoff = 100
-num_redistribute_passes = 10
 
-def gen_random_circles(image_size, rng: Generator):
+def gen_random_circles(flat_pixel_coord, circle_pdf, rng: Generator):
     circles_radius_sq = rng.triangular(left=radius_range[0], mode=radius_range[0], right=radius_range[1], size=circle_count) ** 2
-    circles_position = rng.uniform(size=(circle_count, 2)) * image_size
+    circles_position = rng.choice(flat_pixel_coord, circle_count, p=np.reshape(circle_pdf, flat_pixel_coord.shape[1]), replace=False, axis=1)
+    #circles_position = rng.uniform(size=(circle_count, 2)) * image_size
     return (circles_radius_sq, circles_position)
 
-def redistribute_low_variance_circles(image_size, pixel_coordinates, circles_radius_sq, circles_position, reference_image_data_luminance):
-    # idea: if the variance within a circle it small it covers a homogenous area, i.e. is not interesting
-    # as we typically want to have circle cuts corresponding to features
-    # do *not* change the circle size, otherwise we're just biasing for larger circles!
-    redistribute_count = 0
-    for i, (radius_sq, position) in enumerate(zip(circles_radius_sq, circles_position)):
-        dist_circles_sq = np.sum((pixel_coordinates - position[:, None]) ** 2, axis=0)
-        perpix_circle_hits = dist_circles_sq < radius_sq
-        variance = np.var(reference_image_data_luminance[perpix_circle_hits])
-        if variance < reduce_variance_cutoff:
-            circles_position[i] = rng.uniform(size=2) * image_size
-            redistribute_count += 1
-    print("redistributed", redistribute_count, "circles")
-    return redistribute_count
-
-def compute_area_indices(pixel_coordinates, circles_radius_sq, circles_position):
-    pixel_coordinates_chunk_broadcast = np.broadcast_to(pixel_coordinates[None, :, :], (64,) + pixel_coordinates.shape)
-    perpix_area_index = np.zeros(pixel_coordinates.shape[1], dtype=np.int64)
+def compute_area_indices(flat_pixel_coord, circles_radius_sq, circles_position):
+    flat_pixel_coord_chunk_broadcast = np.broadcast_to(flat_pixel_coord[:, :, None], flat_pixel_coord.shape + (64,))
+    perpix_area_index = np.zeros(flat_pixel_coord.shape[1], dtype=np.int64)
     byte_factors = 2 ** np.arange(64, dtype=np.int64)
     for chunk_start in range(0, circle_count, 64):
         chunk_end = min(chunk_start + 64, circle_count)
         chunk = range(chunk_start, chunk_end)
-        dist_circles_sq = np.sum((pixel_coordinates_chunk_broadcast[:len(chunk), :, :] - circles_position[chunk, :, None]) ** 2, axis=1)
-        perpix_circle_hits = dist_circles_sq < circles_radius_sq[chunk, None]
-        perpix_area_index ^= (perpix_circle_hits * byte_factors[:len(chunk), None]).sum(axis=0)
+        dist_circles_sq = np.sum((flat_pixel_coord_chunk_broadcast[:, :, :len(chunk)] - circles_position[:, None, chunk]) ** 2, axis=0)
+        perpix_circle_hits = dist_circles_sq < circles_radius_sq[None, chunk]
+        perpix_area_index ^= (perpix_circle_hits * byte_factors[None, :len(chunk)]).sum(axis=1)
     return perpix_area_index
 
 def fill_areas(image_size, perpix_area_index, reference_image_data):
@@ -51,7 +38,13 @@ def fill_areas(image_size, perpix_area_index, reference_image_data):
         output[pixels_in_area] = area_color.astype(np.ubyte)
     return output
 
-# print("Total time elapsed: ", time.time() - t0)
+def compute_windowed_var(window_size:int, greyscale_image):
+    # similar to via https://stackoverflow.com/a/36266187
+    # apparently this is *a lot* faster than both a numpy or a SciPy based solution like https://stackoverflow.com/a/33497963
+    sigma = window_size / 4.0
+    mean = cv2.GaussianBlur(greyscale_image, (window_size, window_size), sigma, borderType=cv2.BORDER_REFLECT)
+    sqrmean = cv2.GaussianBlur(greyscale_image*greyscale_image, (window_size, window_size), sigma, borderType=cv2.BORDER_REFLECT)
+    return sqrmean - mean*mean
 
 def save_and_show(image_size, pixel_data):
     picture = np.reshape(pixel_data, (image_size[1], image_size[0], 4))
@@ -66,20 +59,16 @@ if __name__ == '__main__':
     reference_image_data = np.array(reference_image.getdata())
     reference_image_data[reference_image_data[:, 3] < 200] = (0, 0, 0, 0) # alpha treshholding!
     w,h = reference_image.size
-    # palletize picture first?
     reference_image_data_luminance = np.matmul(reference_image_data, [0.2126, 0.7152, 0.0722, 0], dtype=np.float32)
-    img_luminance = Image.fromarray(np.reshape(reference_image_data_luminance, [h,w]).astype(np.ubyte), 'L')
-    img_luminance.show()
+    #Image.fromarray(np.reshape(reference_image_data_luminance, [h,w]).astype(np.ubyte), 'L').show()
+    windowed_var = compute_windowed_var(radius_range[1] * 2 + 1, np.reshape(reference_image_data_luminance, [h,w]))
+    #Image.fromarray(windowed_var.astype(np.ubyte), 'L').show()
+    circle_pdf = windowed_var / np.sum(windowed_var)
 
+    flat_pixel_coord = np.stack([np.tile(np.arange(w), h), np.arange(h).repeat(w)])
+    rng = default_rng(52347)
 
-    pixel_coordinates = np.stack([np.tile(np.arange(w), h), np.arange(h).repeat(w)])
-    rng = default_rng(52346)
-
-    circles_radius_sq, circles_position = gen_random_circles(reference_image.size, rng)
-    for p in range(0, num_redistribute_passes):
-        if redistribute_low_variance_circles(reference_image.size, pixel_coordinates, circles_radius_sq, circles_position, reference_image_data_luminance) == 0:
-            break
-
-    perpix_area_index = compute_area_indices(pixel_coordinates, circles_radius_sq, circles_position)
+    circles_radius_sq, circles_position = gen_random_circles(flat_pixel_coord, circle_pdf, rng)
+    perpix_area_index = compute_area_indices(flat_pixel_coord, circles_radius_sq, circles_position)
     querkle_picture = fill_areas(reference_image.size, perpix_area_index, reference_image_data)
     save_and_show(reference_image.size, querkle_picture)
