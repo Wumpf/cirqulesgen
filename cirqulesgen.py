@@ -49,24 +49,27 @@ def fill_areas(image_size, perpix_area_index, reference_image_data):
         pixels_in_area = perpix_area_index == unique_area_indices[i]
         area_color = np.average(reference_image_data[pixels_in_area], axis=0)
         output[pixels_in_area] = area_color.astype(np.ubyte)
-
-    return np.reshape(output, image_size + (4,))
+    return output
 
 # print("Total time elapsed: ", time.time() - t0)
 
-def save_and_show(picture):
+def save_and_show(image_size, pixel_data):
+    picture = np.reshape(pixel_data, (image_size[1], image_size[0], 4))
     img = Image.fromarray(picture, 'RGBA')
     img.save("querkles.png")
     img.show()
 
 if __name__ == '__main__':
-    reference_image = Image.open('tiger-small.png')
+    reference_image = Image.open(image_path)
+    if reference_image.mode != 'RGBA':
+        raise Exception("Reference image needs to be RGBA")
     reference_image_data = np.array(reference_image.getdata())
+    reference_image_data[reference_image_data[:, 3] < 200] = (0, 0, 0, 0) # alpha treshholding!
     w,h = reference_image.size
     # palletize picture first?
     reference_image_data_luminance = np.matmul(reference_image_data, [0.2126, 0.7152, 0.0722, 0], dtype=np.float32)
-    #img_luminance = Image.fromarray(np.reshape(reference_image_data_luminance, reference_image.size).astype(np.ubyte), 'L')
-    #img_luminance.show()
+    img_luminance = Image.fromarray(np.reshape(reference_image_data_luminance, [h,w]).astype(np.ubyte), 'L')
+    img_luminance.show()
 
 
     pixel_coordinates = np.stack([np.tile(np.arange(w), h), np.arange(h).repeat(w)])
@@ -79,4 +82,4 @@ if __name__ == '__main__':
 
     perpix_area_index = compute_area_indices(pixel_coordinates, circles_radius_sq, circles_position)
     querkle_picture = fill_areas(reference_image.size, perpix_area_index, reference_image_data)
-    save_and_show(querkle_picture)
+    save_and_show(reference_image.size, querkle_picture)
