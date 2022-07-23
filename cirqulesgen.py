@@ -1,5 +1,3 @@
-from dataclasses import replace
-import sys
 from typing import Generator
 from PIL import Image
 import numpy as np
@@ -13,6 +11,27 @@ class Config:
     local_variance_window_size = radius_range[1] + 1
     non_background_pdf_bias = 20
     background_color = np.array([255, 255, 255], dtype=np.ubyte)
+
+def main():
+    reference_image = load_image(Config.image_path)
+    h,w,_ = reference_image.shape
+    reference_image_luminance = np.matmul(reference_image, [0.2126, 0.7152, 0.0722], dtype=np.float32)
+    #Image.fromarray(np.reshape(reference_image_luminance, [h,w]).astype(np.ubyte), 'L').show()
+    windowed_var = compute_windowed_var(Config.local_variance_window_size, reference_image_luminance)
+    circle_pdf = np.sqrt(windowed_var)
+    circle_pdf[(reference_image != Config.background_color).all(axis=2)] += Config.non_background_pdf_bias
+    Image.fromarray((circle_pdf).astype(np.ubyte), 'L').show()
+    circle_pdf /= np.sum(circle_pdf)
+
+    flat_pixel_coord = np.stack([np.tile(np.arange(w), h), np.arange(h).repeat(w)])
+    rng = default_rng(52348)
+
+    circles_radius_sq, circles_position = gen_random_circles(flat_pixel_coord, circle_pdf, rng, Config.radius_range, Config.circle_count)
+    perpix_area_index = compute_area_indices(flat_pixel_coord, circles_radius_sq, circles_position)
+    querkle_picture = fill_areas(perpix_area_index, np.reshape(reference_image, (h * w, 3)), Config.background_color)
+    save_and_show(np.reshape(querkle_picture, reference_image.shape))
+
+
 
 def gen_random_circles(flat_pixel_coord, circle_pdf, rng: Generator, radius_range: tuple, circle_count: int):
     circles_radius_sq = rng.triangular(left=radius_range[0], mode=radius_range[0], right=radius_range[1], size=circle_count) ** 2
@@ -63,20 +82,4 @@ def load_image(path):
     return np.reshape(np.array(reference_image.getdata()), (reference_image.size[1], reference_image.size[0], 3))
 
 if __name__ == '__main__':
-    reference_image = load_image(Config.image_path)
-    h,w,_ = reference_image.shape
-    reference_image_luminance = np.matmul(reference_image, [0.2126, 0.7152, 0.0722], dtype=np.float32)
-    #Image.fromarray(np.reshape(reference_image_luminance, [h,w]).astype(np.ubyte), 'L').show()
-    windowed_var = compute_windowed_var(Config.local_variance_window_size, reference_image_luminance)
-    circle_pdf = np.sqrt(windowed_var)
-    circle_pdf[(reference_image != Config.background_color).all(axis=2)] += Config.non_background_pdf_bias
-    Image.fromarray((circle_pdf).astype(np.ubyte), 'L').show()
-    circle_pdf /= np.sum(circle_pdf)
-
-    flat_pixel_coord = np.stack([np.tile(np.arange(w), h), np.arange(h).repeat(w)])
-    rng = default_rng(52348)
-
-    circles_radius_sq, circles_position = gen_random_circles(flat_pixel_coord, circle_pdf, rng, Config.radius_range, Config.circle_count)
-    perpix_area_index = compute_area_indices(flat_pixel_coord, circles_radius_sq, circles_position)
-    querkle_picture = fill_areas(perpix_area_index, np.reshape(reference_image, (h * w, 3)), Config.background_color)
-    save_and_show(np.reshape(querkle_picture, reference_image.shape))
+    main()
