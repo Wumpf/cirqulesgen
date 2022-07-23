@@ -9,7 +9,8 @@ from numpy.random import default_rng
 image_path = 'couple.png'
 circle_count = 200
 radius_range = (5, 50)
-reduce_variance_cutoff = 100
+local_variance_window_size = radius_range[1] * 4 + 1
+background_color = np.array([255, 255, 255], dtype=np.ubyte)
 
 def gen_random_circles(flat_pixel_coord, circle_pdf, rng: Generator):
     circles_radius_sq = rng.triangular(left=radius_range[0], mode=radius_range[0], right=radius_range[1], size=circle_count) ** 2
@@ -31,44 +32,48 @@ def compute_area_indices(flat_pixel_coord, circles_radius_sq, circles_position):
 
 def fill_areas(image_size, perpix_area_index, reference_image_data):
     unique_area_indices = np.unique(perpix_area_index)
-    output = np.zeros(perpix_area_index.shape + (4,), dtype=np.ubyte)
+    output = np.tile(background_color, perpix_area_index.shape + (1,))
     for i in range(0, unique_area_indices.size):
+        if unique_area_indices[i] == 0:
+            continue
         pixels_in_area = perpix_area_index == unique_area_indices[i]
         area_color = np.average(reference_image_data[pixels_in_area], axis=0)
         output[pixels_in_area] = area_color.astype(np.ubyte)
     return output
 
 def compute_windowed_var(window_size:int, greyscale_image):
-    # similar to via https://stackoverflow.com/a/36266187
+    # similar to https://stackoverflow.com/a/36266187
     # apparently this is *a lot* faster than both a numpy or a SciPy based solution like https://stackoverflow.com/a/33497963
-    sigma = window_size / 4.0
+    sigma = window_size / 6.0
     mean = cv2.GaussianBlur(greyscale_image, (window_size, window_size), sigma, borderType=cv2.BORDER_REFLECT)
     sqrmean = cv2.GaussianBlur(greyscale_image*greyscale_image, (window_size, window_size), sigma, borderType=cv2.BORDER_REFLECT)
-    return sqrmean - mean*mean
+    return (sqrmean - mean*mean).clip(0)
 
 def save_and_show(image_size, pixel_data):
-    picture = np.reshape(pixel_data, (image_size[1], image_size[0], 4))
-    img = Image.fromarray(picture, 'RGBA')
+    picture = np.reshape(pixel_data, (image_size[1], image_size[0], 3))
+    img = Image.fromarray(picture, 'RGB')
     img.save("querkles.png")
     img.show()
 
-if __name__ == '__main__':
+def load_image(path):
     reference_image = Image.open(image_path)
-    if reference_image.mode != 'RGBA':
-        raise Exception("Reference image needs to be RGBA")
-    reference_image_data = np.array(reference_image.getdata())
-    reference_image_data[reference_image_data[:, 3] < 200] = (0, 0, 0, 0) # alpha treshholding!
-    w,h = reference_image.size
-    reference_image_data_luminance = np.matmul(reference_image_data, [0.2126, 0.7152, 0.0722, 0], dtype=np.float32)
+    if reference_image.mode != 'RGB':
+        raise Exception("Reference image needs to be RGB")
+    return (reference_image.size, np.array(reference_image.getdata()))
+
+if __name__ == '__main__':
+    image_size, reference_image_data = load_image(image_path)
+    w,h = image_size
+    reference_image_data_luminance = np.matmul(reference_image_data, [0.2126, 0.7152, 0.0722], dtype=np.float32)
     #Image.fromarray(np.reshape(reference_image_data_luminance, [h,w]).astype(np.ubyte), 'L').show()
-    windowed_var = compute_windowed_var(radius_range[1] * 2 + 1, np.reshape(reference_image_data_luminance, [h,w]))
-    #Image.fromarray(windowed_var.astype(np.ubyte), 'L').show()
+    windowed_var = compute_windowed_var(local_variance_window_size, np.reshape(reference_image_data_luminance, [h,w]))
+    #Image.fromarray((windowed_var*0.11).astype(np.ubyte), 'L').show()
     circle_pdf = windowed_var / np.sum(windowed_var)
 
     flat_pixel_coord = np.stack([np.tile(np.arange(w), h), np.arange(h).repeat(w)])
-    rng = default_rng(52347)
+    rng = default_rng(52348)
 
     circles_radius_sq, circles_position = gen_random_circles(flat_pixel_coord, circle_pdf, rng)
     perpix_area_index = compute_area_indices(flat_pixel_coord, circles_radius_sq, circles_position)
-    querkle_picture = fill_areas(reference_image.size, perpix_area_index, reference_image_data)
-    save_and_show(reference_image.size, querkle_picture)
+    querkle_picture = fill_areas(image_size, perpix_area_index, reference_image_data)
+    save_and_show(image_size, querkle_picture)
