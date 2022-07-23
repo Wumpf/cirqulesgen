@@ -8,8 +8,9 @@ from numpy.random import default_rng
 
 image_path = 'couple.png'
 circle_count = 200
-radius_range = (5, 50)
-local_variance_window_size = radius_range[1] * 2 + 1
+radius_range = (8, 80)
+local_variance_window_size = radius_range[1] + 1
+non_background_pdf_bias = 20
 background_color = np.array([255, 255, 255], dtype=np.ubyte)
 
 def gen_random_circles(flat_pixel_coord, circle_pdf, rng: Generator):
@@ -55,7 +56,7 @@ def save_and_show(picture):
     img.show()
 
 def load_image(path):
-    reference_image = Image.open(image_path)
+    reference_image = Image.open(path)
     if reference_image.mode != 'RGB':
         raise Exception("Reference image needs to be RGB")
     return np.reshape(np.array(reference_image.getdata()), (reference_image.size[1], reference_image.size[0], 3))
@@ -67,6 +68,7 @@ if __name__ == '__main__':
     #Image.fromarray(np.reshape(reference_image_luminance, [h,w]).astype(np.ubyte), 'L').show()
     windowed_var = compute_windowed_var(local_variance_window_size, reference_image_luminance)
     circle_pdf = np.sqrt(windowed_var)
+    circle_pdf[(reference_image != background_color).all(axis=2)] += non_background_pdf_bias
     Image.fromarray((circle_pdf).astype(np.ubyte), 'L').show()
     circle_pdf /= np.sum(circle_pdf)
 
