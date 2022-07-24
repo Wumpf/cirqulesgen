@@ -6,22 +6,23 @@ from numpy.random import default_rng
 
 
 class Config:
-    image_path = 'couple.png'
+    image_path = 'sparrow.webp'
     circle_count = 200
-    radius_range = (8, 80)
+    radius_range = (5, 50)
     local_variance_window_size = radius_range[1] + 1
     non_background_pdf_bias = 20
+    num_grey_levels = 6  # including background
 
 
 def main():
     reference_image = load_image_to_grey(Config.image_path)
     h, w = reference_image.shape
-    #Image.fromarray(np.reshape(reference_image_luminance, [h,w]).astype(np.ubyte), 'L').show()
+    # Image.fromarray(np.reshape(reference_image_luminance, [h,w]).astype(np.ubyte), 'L').show()
     windowed_var = compute_windowed_var(Config.local_variance_window_size, reference_image)
     circle_pdf = np.sqrt(windowed_var)
     circle_pdf[reference_image < 230] += Config.non_background_pdf_bias
     circle_pdf /= np.sum(circle_pdf)
-    cv2.imshow('circle_pdf', circle_pdf * reference_image.size * 0.5)
+    cv2.imshow('circle_pdf', circle_pdf * reference_image.size * 0.25)
 
     flat_pixel_coord = np.stack([np.tile(np.arange(w), h), np.arange(h).repeat(w)])
     rng = default_rng(52348)
@@ -31,8 +32,10 @@ def main():
     circle_picture = draw_circles(reference_image.shape, circles_radius_sq, circles_position)
     cv2.imshow('circles', circle_picture)
 
+    grey_levels = determine_grey_levels(Config.num_grey_levels, reference_image)
+
     perpix_area_index = compute_area_indices(flat_pixel_coord, circles_radius_sq, circles_position)
-    querkle_picture = fill_areas(perpix_area_index, reference_image)
+    querkle_picture = fill_areas(grey_levels, perpix_area_index, reference_image)
     cv2.imshow('cirqules', querkle_picture)
     cv2.imwrite('cirqules.png', querkle_picture)
 
@@ -40,11 +43,28 @@ def main():
     cv2.destroyAllWindows()
 
 
+def determine_grey_levels(num_grey_levels: int, greyscale_image: np.ndarray) -> np.ndarray:
+    image_values = greyscale_image.reshape(greyscale_image.size).astype(np.float32)
+    # generate one extra label/grey-level and clamp it to 255
+    # in most cases it will be that value anyways as background color is defined as white
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+    _, labels, grey_levels = cv2.kmeans(image_values, num_grey_levels, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
+    grey_levels = grey_levels.flatten().astype(np.uint8)
+    grey_levels[np.argmax(grey_levels)] = 255
+
+    quantized_picture = grey_levels[labels.flatten()].reshape(greyscale_image.shape)
+    cv2.imshow('original & quantized image', cv2.hconcat((greyscale_image, quantized_picture)))
+
+    grey_levels.sort()
+    print("grey levels", grey_levels)
+    return grey_levels
+
+
 def gen_random_circles(flat_pixel_coord, circle_pdf, rng: Generator, radius_range: tuple, circle_count: int) -> tuple:
     circles_radius_sq = rng.triangular(left=radius_range[0], mode=radius_range[0], right=radius_range[1], size=circle_count) ** 2
     circles_position = rng.choice(flat_pixel_coord, circle_count, p=np.reshape(
         circle_pdf, flat_pixel_coord.shape[1]), replace=False, axis=1)
-    #circles_position = rng.uniform(size=(circle_count, 2)) * image_size
+    # circles_position = rng.uniform(size=(circle_count, 2)) * image_size
     return (circles_radius_sq, circles_position)
 
 
@@ -61,7 +81,7 @@ def compute_area_indices(flat_pixel_coord, circles_radius_sq, circles_position) 
     return perpix_area_index
 
 
-def fill_areas(perpix_area_index: np.ndarray, reference_image: np.ndarray) -> np.ndarray:
+def fill_areas(grey_levels: np.ndarray, perpix_area_index: np.ndarray, reference_image: np.ndarray) -> np.ndarray:
     reference_image_data = np.reshape(reference_image, reference_image.size)
     unique_area_indices = np.unique(perpix_area_index)
     output = 255 * np.ones(perpix_area_index.shape, np.ubyte)
@@ -69,8 +89,9 @@ def fill_areas(perpix_area_index: np.ndarray, reference_image: np.ndarray) -> np
         if unique_area_indices[i] == 0:
             continue
         pixels_in_area = perpix_area_index == unique_area_indices[i]
-        area_color = np.average(reference_image_data[pixels_in_area], axis=0)
-        output[pixels_in_area] = area_color.astype(np.ubyte)
+        covered_pixels = reference_image_data[pixels_in_area]
+        color_idx = np.argmin(np.sum((covered_pixels[None, :] - grey_levels[:, None]) ** 2, axis=1))
+        output[pixels_in_area] = grey_levels[color_idx]
     return np.reshape(output, reference_image.shape)
 
 
