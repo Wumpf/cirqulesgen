@@ -1,3 +1,4 @@
+import sys
 import traceback
 from typing import Generator
 import numpy as np
@@ -7,7 +8,7 @@ from numpy.random import default_rng
 
 class Config:
     image_path = 'sparrow.webp'
-    circle_count = 200
+    circle_count = 600
     radius_range = (5, 50)
     local_variance_window_size = radius_range[1] + 1
     non_background_pdf_bias = 20
@@ -16,6 +17,7 @@ class Config:
 
 def main():
     reference_image = load_image_to_grey(Config.image_path)
+    grey_levels = determine_grey_levels(Config.num_grey_levels, reference_image)
     h, w = reference_image.shape
     # Image.fromarray(np.reshape(reference_image_luminance, [h,w]).astype(np.ubyte), 'L').show()
     windowed_var = compute_windowed_var(Config.local_variance_window_size, reference_image)
@@ -25,22 +27,24 @@ def main():
     cv2.imshow('circle_pdf', circle_pdf * reference_image.size * 0.25)
 
     flat_pixel_coord = np.stack([np.tile(np.arange(w), h), np.arange(h).repeat(w)])
-    rng = default_rng(52348)
 
-    circles_radius_sq, circles_position = gen_random_circles(flat_pixel_coord, circle_pdf, rng, Config.radius_range, Config.circle_count)
+    for i in range(0, 1):
+        rng = default_rng(52348 + i)
 
-    circle_picture = draw_circles(reference_image.shape, circles_radius_sq, circles_position)
-    cv2.imshow('circles', circle_picture)
+        circles_radius_sq, circles_position = gen_random_circles(
+            flat_pixel_coord, circle_pdf, rng, Config.radius_range, Config.circle_count)
 
-    grey_levels = determine_grey_levels(Config.num_grey_levels, reference_image)
+        #circle_picture = draw_circles(reference_image.shape, circles_radius_sq, circles_position)
+        #cv2.imshow('circles', circle_picture)
 
-    perpix_area_index = compute_area_indices(flat_pixel_coord, circles_radius_sq, circles_position)
-    querkle_picture = fill_areas(grey_levels, perpix_area_index, reference_image)
-    cv2.imshow('cirqules', querkle_picture)
-    cv2.imwrite('cirqules.png', querkle_picture)
+        perpix_area_index = compute_area_indices(flat_pixel_coord, reference_image.shape, circles_radius_sq, circles_position)
+        cirqules_picture = fill_areas(grey_levels, perpix_area_index, reference_image)
 
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+        cirqules_error = ((reference_image - cirqules_picture) ** 2).mean()
+        print("error", i, cirqules_error)
+
+        cv2.imshow('cirqules ' + str(i), cirqules_picture)
+        #cv2.imwrite('cirqules.png', cirqules_picture)
 
 
 def determine_grey_levels(num_grey_levels: int, greyscale_image: np.ndarray) -> np.ndarray:
@@ -68,20 +72,43 @@ def gen_random_circles(flat_pixel_coord, circle_pdf, rng: Generator, radius_rang
     return (circles_radius_sq, circles_position)
 
 
-def compute_area_indices(flat_pixel_coord, circles_radius_sq, circles_position) -> np.ndarray:
-    flat_pixel_coord_chunk_broadcast = np.broadcast_to(flat_pixel_coord[:, :, None], flat_pixel_coord.shape + (64,))
-    perpix_area_index = np.zeros(flat_pixel_coord.shape[1], dtype=np.int64)
+def compute_area_indices(flat_pixel_coord, image_shape, circles_radius_sq, circles_position) -> np.ndarray:
+    # we need to assign a unique index to every area
+    # this is surprisingly hard since there's many more areas than circles
+    # a error free solution would be to have a bit set per circle, but we can't afford that many bits!
+    # so instead we accept some error and reuse bits for circles
+
+    # previous, slower version using bool matricies
+    # pixel_coord_y = np.broadcast_to(np.arange(0, image_shape[0])[:, None], image_shape)
+    # pixel_coord_x = np.broadcast_to(np.arange(0, image_shape[1])[None, :], image_shape)
+    # flat_pixel_coord_chunk_broadcast = np.broadcast_to(flat_pixel_coord[:, :, None], flat_pixel_coord.shape + (64,))
+    # perpix_area_index = np.zeros(flat_pixel_coord.shape[1], dtype=np.int64)
+    # byte_factors = 2 ** np.arange(64, dtype=np.int64)
+    # for chunk_start in range(0, circles_radius_sq.size, 64):
+    #     chunk_end = min(chunk_start + 64, circles_radius_sq.size)
+    #     chunk = range(chunk_start, chunk_end)
+    #     dist_circles_sq = np.sum((flat_pixel_coord_chunk_broadcast[:, :, :len(chunk)] - circles_position[:, None, chunk]) ** 2, axis=0)
+    #     perpix_circle_hits = dist_circles_sq < circles_radius_sq[None, chunk]
+    #     perpix_area_index ^= (perpix_circle_hits * byte_factors[None, :len(chunk)]).sum(axis=1)
+
+    # scan line based circle drawing
+    perpix_area_index = np.zeros(image_shape, dtype=np.int64)
     byte_factors = 2 ** np.arange(64, dtype=np.int64)
-    for chunk_start in range(0, circles_radius_sq.size, 64):
-        chunk_end = min(chunk_start + 64, circles_radius_sq.size)
-        chunk = range(chunk_start, chunk_end)
-        dist_circles_sq = np.sum((flat_pixel_coord_chunk_broadcast[:, :, :len(chunk)] - circles_position[:, None, chunk]) ** 2, axis=0)
-        perpix_circle_hits = dist_circles_sq < circles_radius_sq[None, chunk]
-        perpix_area_index ^= (perpix_circle_hits * byte_factors[None, :len(chunk)]).sum(axis=1)
+    circles_radius = np.sqrt(circles_radius_sq)
+    for i, r in enumerate(circles_radius):
+        p = circles_position[:, i]
+        ymin = np.clip((p[1] - r + 0.5).astype(np.uint32), 0, image_shape[0] - 1)
+        ymax = np.clip((p[1] + r + 0.5).astype(np.uint32), 0, image_shape[0] - 1) + 1
+        dy = np.sqrt(np.maximum(0, -(np.arange(ymin, ymax) - p[1]) ** 2 + circles_radius_sq[i]))
+        x_ranges = np.clip((np.concatenate((-dy[None, :], dy[None, :])) + p[0] + 0.5).astype(np.uint32), 0, image_shape[1])
+        for iy, y in enumerate(range(ymin, ymax)):
+            perpix_area_index[y, x_ranges[0, iy]:x_ranges[1, iy]] ^= byte_factors[i % byte_factors.size]
+
     return perpix_area_index
 
 
 def fill_areas(grey_levels: np.ndarray, perpix_area_index: np.ndarray, reference_image: np.ndarray) -> np.ndarray:
+    perpix_area_index = np.reshape(perpix_area_index, reference_image.size)
     reference_image_data = np.reshape(reference_image, reference_image.size)
     unique_area_indices = np.unique(perpix_area_index)
     output = 255 * np.ones(perpix_area_index.shape, np.ubyte)
@@ -127,5 +154,6 @@ if __name__ == '__main__':
         traceback.print_exc()
     finally:
         # want so see pictures in the end *even* if something crashed!
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
+        if len(sys.argv) == 1 or sys.argv[1] != "--no-wait":
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
